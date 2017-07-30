@@ -1,5 +1,7 @@
+import json
 import logging
 
+from .. import steps
 from ..steps import *
 
 logger = logging.getLogger(__name__)
@@ -7,6 +9,10 @@ logger = logging.getLogger(__name__)
 class Mission:
     """A series of Steps in a mission."""
     steps = []
+    def __init__(self, steps=None):
+        if steps is not None:
+            self.steps = steps
+
     def execute(self, v, interactive=False):
         if interactive:
             self.print_steps()
@@ -62,7 +68,41 @@ class OrbitalMission(Mission):
             # TODO orbital abort
             (ExecuteNode(), DropStagesAndOpenParachute()),
             (ControllerConfirm(), None),
-            (ChangePeriapsis(60, 40000), None),
+            (ChangeApsis(60, 40000), None),
             (ExecuteNode(), None),
             (DropStagesAndOpenParachute(), None),
             ]
+
+
+def load_mission(fn):
+    """Load mission from a JSON file.
+
+    Expected format looks like this:
+    [
+        [StepName, [Arg1, Arg2], AbortName, [Arg1, Arg2]],
+    ]
+    All sections after the StepName are optional.
+    """
+    with open(fn) as f:
+        data = json.load(f)
+    plan = []
+    for items in data:
+        step = items[0]
+        if len(items) > 1:
+            args = items[1]
+        else:
+            args = []
+        if len(items) > 2:
+            abort = items[2]
+        else:
+            abort = None
+        if len(items) > 3:
+            abort_args = items[3]
+        else:
+            abort_args = []
+        line = (
+                getattr(steps, step)(*args),
+                getattr(steps, abort)(*abort_args) if abort else abort,
+                )
+        plan.append(line)
+    return Mission(plan)

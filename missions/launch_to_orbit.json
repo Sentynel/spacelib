@@ -1,0 +1,12 @@
+[
+    ["LaunchToApoapsis", [150000], "DropStages"],
+    ["JettisonFairings", [], "DropStages"],
+    ["OpenPanels", [], "DropStages"],
+    ["DeployAntennae", [], "DropStages"],
+    ["Circularise", ["apoapsis"], "DropStages"],
+    ["ExecuteNode", [], "DropStages"],
+    ["ChangeApsis", ["periapsis", 32086842], "DropStages"],
+    ["ExecuteNode", [], "DropStages"],
+    ["ChangeApsis", ["apoapsis", 31906819], "DropStages"],
+    ["ExecuteNode", [], "DropStages"]
+]

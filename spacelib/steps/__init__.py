@@ -3,6 +3,7 @@ import math
 import time
 
 from .. import core
+from ..util import vector_angle
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,9 @@ class LaunchToApoapsis(Step):
         # TODO generalise for other planets
         # TODO check for control loss (large deviation of angle from target)
         # TODO time acceleration
-        # TODO improve the pitchover
         # TODO autopilot that can actually fly straight
+        # TODO check for not making our target apoapsis
+        # TODO adjust throttle to burn to apoapsis in gravity turn
         self.height = height
 
     def __str__(self):
@@ -49,11 +51,17 @@ class LaunchToApoapsis(Step):
         self.gravity_turn_stage = 0
         self.last_altitude = 0
         self.descending_count = 0
+        # a frame aligned with the autopilot's frame, but measuring velocity
+        # relative to ground
+        vel_frame = core.conn.space_center.ReferenceFrame.create_hybrid(
+                position=v.orbit.body.reference_frame,
+                rotation=v.surface_reference_frame)
         try:
             with c.stream(getattr, v.flight(), "mean_altitude") as altitude, \
                     c.stream(getattr, v.orbit, "apoapsis_altitude") as apoapsis, \
                     c.stream(getattr, v.flight(), "dynamic_pressure") as q, \
-                    c.stream(getattr, v.auto_pilot, "error") as err:
+                    c.stream(getattr, v.flight(vel_frame), "velocity") as velocity, \
+                    c.stream(getattr, v.auto_pilot, "target_direction") as ap_target:
                 self.prep_launch()
                 logger.info("Launch!")
                 v.control.activate_next_stage()
@@ -61,7 +69,7 @@ class LaunchToApoapsis(Step):
                     self.do_failure_check(altitude)
                     self.do_staging()
                     on_target = self.do_apoapsis_check(apoapsis)
-                    self.do_gravity_turn(altitude, err)
+                    self.do_gravity_turn(altitude, velocity, ap_target)
                     self.do_q_check(q)
                     if on_target and self.do_atmosphere_check(altitude):
                         logger.info("Exited atmosphere and attaining target altitude. Exiting.")
@@ -99,26 +107,48 @@ class LaunchToApoapsis(Step):
             self.throttle = 1
         return res
 
-    def do_gravity_turn(self, altitude, err):
+    def do_gravity_turn(self, altitude, velocity, ap_target):
+        PITCHOVER_TARGET = 10
+        START_TURN_ALT = 5000
+        START_BLEND_ALT = 15000
+        END_BLEND_ALT = 20000
         a = altitude()
-        if a < 5000:
+        if a < START_TURN_ALT:
             return
         if not self.gravity_turn_stage:
-            logger.info("Starting gravity turn")
+            logger.info("Pitch over to start gravity turn")
             # Do pitchover in planet reference frame
             ap = self.v.auto_pilot
-            ap.target_pitch_and_heading(90 - 10, 90)
+            ap.target_pitch_and_heading(90 - PITCHOVER_TARGET, 90)
             self.gravity_turn_stage = 1
             time.sleep(0.1)
-        if self.gravity_turn_stage == 1 and err() < 1:
+        # wait for velocity vector to match our steering
+        if self.gravity_turn_stage == 1 and vector_angle(velocity(), ap_target()) < 1:
             logger.info("Following gravity turn")
             self.gravity_turn_stage = 2
-            # Set the vessel's reference frame to orbital rather than surface
-            # and follow velocity vector
+            # follow velocity vector
             ap = self.v.auto_pilot
-            ap.reference_frame = self.v.orbital_reference_frame
+            ap.reference_frame = self.v.surface_velocity_reference_frame
             time.sleep(0.1)
             ap.target_direction = (0, 1, 0)
+        if self.gravity_turn_stage == 2 and a > START_BLEND_ALT:
+            logger.info("Reference frame transition to orbital")
+            self.gravity_turn_stage = 3
+        if self.gravity_turn_stage == 3 and a > END_BLEND_ALT:
+            logger.info("Reference frame transition complete")
+            self.v.auto_pilot.reference_frame = self.v.orbital_reference_frame
+            self.v.auto_pilot.target_direction = (0, 1, 0)
+            self.gravity_turn_stage = 4
+        if self.gravity_turn_stage == 3:
+            # transition to orbital reference frame
+            # get orbital velocity direction vector in our frame
+            final_vec = core.conn.space_center.transform_direction((0,1,0), self.v.orbital_reference_frame,
+                    self.v.surface_velocity_reference_frame)
+            initial_vec = (0, 1, 0)
+            # blend them from 15000 to 20000 metres
+            percentage = (a - START_BLEND_ALT) / (END_BLEND_ALT - START_BLEND_ALT)
+            dir_vec = tuple((final_vec[i] - initial_vec[i]) * percentage + initial_vec[i] for i in range(3))
+            self.v.auto_pilot.target_direction = dir_vec
 
     def do_staging(self):
         # Update streams
@@ -229,29 +259,34 @@ class Circularise(OrbitalAdjustment):
         super().execute(v)
 
 
-class ChangePeriapsis(OrbitalAdjustment):
-    def __init__(self, when, periapsis):
+class ChangeApsis(OrbitalAdjustment):
+    def __init__(self, when, height):
         super().__init__(when, 0)
-        self.periapsis = periapsis
+        self.height = height
 
     def __str__(self):
-        return "Adjust periapsis to {} at {}".format(self.periapsis, self.when)
+        return "Adjust apsis to {} at {}".format(self.height, self.when)
 
     def execute(self, v):
-        logger.info("Adding change periapsis node")
+        logger.info("Adding change apsis node")
         # treat the supplied value as relative to the surface
-        self.periapsis += v.orbit.body.equatorial_radius
+        self.height += v.orbit.body.equatorial_radius
         if self.when == "apoapsis":
-            self.semi_major = (v.orbit.apoapsis + self.periapsis) / 2
+            self.semi_major = (v.orbit.apoapsis + self.height) / 2
+        elif self.when == "periapsis":
+            self.semi_major = (v.orbit.periapsis + self.height) / 2
         elif isinstance(self.when, int):
+            # in this case, the burn point becomes one new apsis and the target
+            # the other
             anomaly = v.orbit.true_anomaly_at_ut(core.conn.space_center.ut + self.when)
             r = v.orbit.radius_at_true_anomaly(anomaly)
-            self.semi_major = (r + self.periapsis) / 2
+            self.semi_major = (r + self.height) / 2
+        else:
+            raise StepFailed("unknown target time")
         super().execute(v)
 
 
 class ExecuteNode(Step):
-    # TODO keep an eye on orientation and adjust if it gets too far off
     # TODO generalise the auto-stager from launch to work here too
 
     def __str__(self):
@@ -313,11 +348,21 @@ class ControllerConfirm(Step):
 
     def execute(self, v):
         input("Press enter to continue mission.")
+
+
+class DropStages(Step):
+    def __str__(self):
+        return "Dropping all stages."
+
+    def execute(self, v):
+        v.control.throttle = 0
+        while v.control.current_stage > 0:
+            time.sleep(0.1)
+            v.control.activate_next_stage()
     
     
 class DropStagesAndOpenParachute(Step):
     # TODO warp to atmosphere
-    # TODO make reference frame relative to surface
     def __str__(self):
         return "Wait for descent and open parachutes"
 
@@ -336,7 +381,7 @@ class DropStagesAndOpenParachute(Step):
             logger.info("Dropping stage")
             v.control.activate_next_stage()
         ap = v.auto_pilot
-        ap.reference_frame = v.orbital_reference_frame
+        ap.reference_frame = v.surface_velocity_reference_frame
         ap.target_direction = (0, -1, 0)
         ap.engage()
         with core.conn.stream(getattr, v.flight(), "mean_altitude") as altitude:
@@ -348,6 +393,47 @@ class DropStagesAndOpenParachute(Step):
             logger.info("Opening parachutes")
             v.control.activate_next_stage()
             ap.disengage()
+
+
+class DeployAntennae(Step):
+    def __str__(self):
+        return "Deploy antennae"
+
+    def execute(self, v):
+        logger.info("Deploying antennae")
+        for a in v.parts.antennas:
+            if a.deployable:
+                a.deployed = True
+        time.sleep(1)
+
+
+class OpenPanels(Step):
+    def __str__(self):
+        return "Open solar panels"
+
+    def execute(self, v):
+        logger.info("Opening solar panels")
+        for p in v.parts.solar_panels:
+            if p.deployable:
+                p.deployed = True
+        time.sleep(1)
+
+
+class JettisonFairings(Step):
+    def __str__(self):
+        return "Jettison fairings"
+
+    def execute(self, v):
+        logger.info("Jettisoning fairings")
+        for f in v.parts.fairings:
+            try:
+                logger.info("Found fairing %s", f)
+                if not f.jettisoned:
+                    logger.info("Jettisoning %s", f)
+                    f.jettison()
+            except Exception:
+                logger.exception("Jettisoning fairing failed")
+        time.sleep(1)
 
 
 class LaunchPrep(Step):

@@ -1,4 +1,5 @@
 #! /usr/bin/env python3
+import argparse
 import logging
 
 from spacelib.core import setup
@@ -12,8 +13,13 @@ formatter = logging.Formatter("%(asctime)s|%(name)s|%(levelname)s\t%(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
+parser = argparse.ArgumentParser()
+parser.add_argument("plan", help="JSON plan file")
+args = parser.parse_args()
+
 conn = setup()
 
 vessel = conn.space_center.active_vessel
 
-missions.OrbitalMission().execute(vessel, interactive=True)
+mission = missions.load_mission(args.plan)
+mission.execute(vessel, interactive=True)
