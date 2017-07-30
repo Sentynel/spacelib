@@ -46,13 +46,14 @@ class LaunchToApoapsis(Step):
         self.q_limit = 1
         self.solid_fuel_stream = None
         self.liquid_fuel_stream = None
-        self.started_gravity_turn = False
+        self.gravity_turn_stage = 0
         self.last_altitude = 0
         self.descending_count = 0
         try:
             with c.stream(getattr, v.flight(), "mean_altitude") as altitude, \
                     c.stream(getattr, v.orbit, "apoapsis_altitude") as apoapsis, \
-                    c.stream(getattr, v.flight(), "dynamic_pressure") as q:
+                    c.stream(getattr, v.flight(), "dynamic_pressure") as q, \
+                    c.stream(getattr, v.auto_pilot, "error") as err:
                 self.prep_launch()
                 logger.info("Launch!")
                 v.control.activate_next_stage()
@@ -60,7 +61,7 @@ class LaunchToApoapsis(Step):
                     self.do_failure_check(altitude)
                     self.do_staging()
                     on_target = self.do_apoapsis_check(apoapsis)
-                    self.do_gravity_turn(altitude)
+                    self.do_gravity_turn(altitude, err)
                     self.do_q_check(q)
                     if on_target and self.do_atmosphere_check(altitude):
                         logger.info("Exited atmosphere and attaining target altitude. Exiting.")
@@ -98,18 +99,26 @@ class LaunchToApoapsis(Step):
             self.throttle = 1
         return res
 
-    def do_gravity_turn(self, altitude):
+    def do_gravity_turn(self, altitude, err):
         a = altitude()
-        if a < 10000:
+        if a < 5000:
             return
-        if not self.started_gravity_turn:
+        if not self.gravity_turn_stage:
             logger.info("Starting gravity turn")
-            # Lazy pitchover
+            # Do pitchover in planet reference frame
+            ap = self.v.auto_pilot
+            ap.target_pitch_and_heading(90 - 10, 90)
+            self.gravity_turn_stage = 1
+            time.sleep(0.1)
+        if self.gravity_turn_stage == 1 and err() < 1:
+            logger.info("Following gravity turn")
+            self.gravity_turn_stage = 2
             # Set the vessel's reference frame to orbital rather than surface
+            # and follow velocity vector
             ap = self.v.auto_pilot
             ap.reference_frame = self.v.orbital_reference_frame
+            time.sleep(0.1)
             ap.target_direction = (0, 1, 0)
-            self.started_gravity_turn = True
 
     def do_staging(self):
         # Update streams
@@ -162,6 +171,7 @@ class LaunchToApoapsis(Step):
         self.v.auto_pilot.target_pitch_and_heading(90, 90)
         self.v.auto_pilot.engage()
         self.v.control.throttle = 1
+        self.v.control.sas = False
         time.sleep(1)
 
 
@@ -252,6 +262,7 @@ class ExecuteNode(Step):
         if not v.control.nodes:
             raise StepFailed("no node to execute")
         node = v.control.nodes[0]
+        v.control.sas = False
         ap = v.auto_pilot
         ap.reference_frame = node.reference_frame
         ap.target_direction = node.burn_vector(node.reference_frame)
@@ -306,11 +317,13 @@ class ControllerConfirm(Step):
     
 class DropStagesAndOpenParachute(Step):
     # TODO warp to atmosphere
+    # TODO make reference frame relative to surface
     def __str__(self):
         return "Wait for descent and open parachutes"
 
     def execute(self, v):
         logger.info("Begun parachute step")
+        v.control.sas = False
         # find our parachutes
         parachutes = v.parts.parachutes
         if not parachutes:

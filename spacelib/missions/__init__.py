@@ -15,6 +15,9 @@ class Mission:
         for step, abort in self.steps:
             try:
                 step.execute(v)
+                # Turn off autopilot, turn on auto-stabiliser
+                v.auto_pilot.disengage()
+                v.control.sas = True
             except Exception:
                 logger.exception("Step failed")
                 v.auto_pilot.disengage()
@@ -59,7 +62,7 @@ class OrbitalMission(Mission):
             # TODO orbital abort
             (ExecuteNode(), DropStagesAndOpenParachute()),
             (ControllerConfirm(), None),
-            (ChangePeriapsis(60, 50000), None), 
+            (ChangePeriapsis(60, 40000), None),
             (ExecuteNode(), None),
             (DropStagesAndOpenParachute(), None),
             ]
