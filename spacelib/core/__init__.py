@@ -4,6 +4,8 @@ import krpc
 
 logger = logging.getLogger(__name__)
 
+# TODO telemetry streaming display
+
 conn = None
 def setup():
     global conn

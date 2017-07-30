@@ -7,7 +7,11 @@ logger = logging.getLogger(__name__)
 class Mission:
     """A series of Steps in a mission."""
     steps = []
-    def execute(self, v):
+    def execute(self, v, interactive=False):
+        if interactive:
+            self.print_steps()
+            s = int(input("Start at which stage? "))
+            self.steps = self.steps[s:]
         for step, abort in self.steps:
             try:
                 step.execute(v)
@@ -22,6 +26,11 @@ class Mission:
                     logger.critical("No abort available")
                     logger.critical("¯\_(ツ)_/¯")
                     return
+
+    def print_steps(self):
+        print("Mission plan:")
+        for i, s in enumerate(self.steps):
+            print("{}: {}".format(i, s[0]))
 
 
 class SuborbitalAbortMission(Mission):
@@ -46,5 +55,11 @@ class SuborbitalMission(Mission):
 class OrbitalMission(Mission):
     steps = [
             (LaunchToApoapsis(100000), DropStagesAndOpenParachute()),
+            (Circularise("apoapsis"), DropStagesAndOpenParachute()),
+            # TODO orbital abort
+            (ExecuteNode(), DropStagesAndOpenParachute()),
+            (ControllerConfirm(), None),
+            (ChangePeriapsis(60, 50000), None), 
+            (ExecuteNode(), None),
             (DropStagesAndOpenParachute(), None),
             ]

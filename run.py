@@ -16,4 +16,4 @@ conn = setup()
 
 vessel = conn.space_center.active_vessel
 
-missions.OrbitalMission().execute(vessel)
+missions.OrbitalMission().execute(vessel, interactive=True)
