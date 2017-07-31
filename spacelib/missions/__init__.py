@@ -1,6 +1,9 @@
 import json
 import logging
 
+import krpc
+
+from .. import core
 from .. import steps
 from ..steps import *
 
@@ -13,21 +16,29 @@ class Mission:
         if steps is not None:
             self.steps = steps
 
-    def execute(self, v, interactive=False):
+    def execute(self, interactive=False):
         if interactive:
             self.print_steps()
             s = int(input("Start at which stage? "))
             self.steps = self.steps[s:]
         for step, abort in self.steps:
             try:
+                v = core.conn.space_center.active_vessel
+            except krpc.error.RPCError:
+                v = None
+            try:
                 step.execute(v)
-                # Turn off autopilot, turn on auto-stabiliser
-                v.auto_pilot.disengage()
-                v.control.sas = True
+                if v:
+                    # Turn off autopilot, turn on auto-stabiliser
+                    v.auto_pilot.disengage()
+                    v.control.sas = True
+                    v.control.throttle = 0
             except Exception:
                 logger.exception("Step failed")
-                v.auto_pilot.disengage()
-                v.control.throttle = 0
+                if v:
+                    v.auto_pilot.disengage()
+                    v.control.throttle = 0
+                    v.control.sas = True
                 if abort:
                     logger.error("Executing abort")
                     return abort.execute(v)

@@ -24,6 +24,25 @@ class Step:
         return "Step"
 
 
+class PrepareVessel(Step):
+    def __init__(self, name, vessel_type):
+        if vessel_type == "SPH":
+            self.site = "Runway"
+        elif vessel_type == "VAB":
+            self.site = "LaunchPad"
+        else:
+            raise StepFailed("vessel_type must be SPH or VAB")
+        self.name = name
+        self.vessel_type = vessel_type
+
+    def __str__(self):
+        return "Prepare {} for launch".format(self.name)
+
+    def execute(self, v):
+        core.conn.space_center.launch_vessel(self.vessel_type, self.name, self.site)
+        time.sleep(1)
+
+
 class LaunchToApoapsis(Step):
     def __init__(self, height):
         # TODO check that target height > body upper atmosphere limit
@@ -288,6 +307,8 @@ class ChangeApsis(OrbitalAdjustment):
 
 class ExecuteNode(Step):
     # TODO generalise the auto-stager from launch to work here too
+    # TODO make the back-off at completion a bit more aggressive to avoid
+    # wandering off, and detect failure
 
     def __str__(self):
         return "Execute next node"
@@ -427,9 +448,7 @@ class JettisonFairings(Step):
         logger.info("Jettisoning fairings")
         for f in v.parts.fairings:
             try:
-                logger.info("Found fairing %s", f)
                 if not f.jettisoned:
-                    logger.info("Jettisoning %s", f)
                     f.jettison()
             except Exception:
                 logger.exception("Jettisoning fairing failed")

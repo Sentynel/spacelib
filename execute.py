@@ -19,7 +19,5 @@ args = parser.parse_args()
 
 conn = setup()
 
-vessel = conn.space_center.active_vessel
-
 mission = missions.load_mission(args.plan)
-mission.execute(vessel, interactive=True)
+mission.execute(interactive=True)

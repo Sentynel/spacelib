@@ -1,12 +1,10 @@
 [
+    ["PrepareVessel",  ["PA-3B", "VAB"]],
+    ["ControllerConfirm"],
     ["LaunchToApoapsis", [150000], "DropStages"],
     ["JettisonFairings", [], "DropStages"],
     ["OpenPanels", [], "DropStages"],
     ["DeployAntennae", [], "DropStages"],
     ["Circularise", ["apoapsis"], "DropStages"],
-    ["ExecuteNode", [], "DropStages"],
-    ["ChangeApsis", ["periapsis", 32086842]],
-    ["ExecuteNode"],
-    ["ChangeApsis", ["apoapsis", 31906819]],
-    ["ExecuteNode"]
+    ["ExecuteNode", [], "DropStages"]
 ]
