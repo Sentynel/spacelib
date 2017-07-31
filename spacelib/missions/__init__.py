@@ -85,7 +85,7 @@ class OrbitalMission(Mission):
             ]
 
 
-def load_mission(fn):
+def load_mission_from_file(fn):
     """Load mission from a JSON file.
 
     Expected format looks like this:
@@ -96,6 +96,13 @@ def load_mission(fn):
     """
     with open(fn) as f:
         data = json.load(f)
+    return load_mission(data)
+
+def load_mission_from_json(s):
+    data = json.loads(s)
+    return load_mission(data)
+
+def load_mission(data):
     plan = []
     for items in data:
         step = items[0]
@@ -117,3 +124,12 @@ def load_mission(fn):
                 )
         plan.append(line)
     return Mission(plan)
+
+def mission_repl():
+    try:
+        while True:
+            s = input("Mission to execute:\n")
+            m = load_mission_from_json(s)
+            m.execute()
+    except KeyboardInterrupt:
+        logger.info("Interrupted")

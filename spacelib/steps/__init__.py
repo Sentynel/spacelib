@@ -43,30 +43,70 @@ class PrepareVessel(Step):
         time.sleep(1)
 
 
-class LaunchToApoapsis(Step):
-    def __init__(self, height):
+class StagedStep(Step):
+    def execute(self, v):
+        self.v = v
+        self.solid_fuel_stream = None
+        self.liquid_fuel_stream = None
+
+    def do_staging(self):
+        # Update streams
+        # We want to find the resources we'll drop if we stage
+        stage = self.v.control.current_stage - 1
+        if self.solid_fuel_stream is None:
+            res = self.v.resources_in_decouple_stage(stage, False)
+            self.solid_fuel_stream = core.conn.add_stream(res.amount, "SolidFuel")
+        if self.liquid_fuel_stream is None:
+            res = self.v.resources_in_decouple_stage(stage, False)
+            self.liquid_fuel_stream = core.conn.add_stream(res.amount, "LiquidFuel")
+        # If the current stage has no liquid fuel AND no solid fuel, stage
+        if self.solid_fuel_stream() < 0.1 and self.liquid_fuel_stream() < 0.1:
+            logger.info("Stage empty, staging")
+            self.v.control.throttle = 0
+            self.close_streams()
+            time.sleep(0.5)
+            self.v.control.activate_next_stage()
+            time.sleep(0.5)
+            # Check if we have any fuel left
+            r = self.v.resources
+            if r.amount("SolidFuel") < 0.1 and r.amount("LiquidFuel") < 0.1:
+                raise StepFailed("Out of fuel")
+
+    def close_streams(self):
+        if self.solid_fuel_stream:
+            self.solid_fuel_stream.remove()
+            self.solid_fuel_stream = None
+        if self.liquid_fuel_stream:
+            self.liquid_fuel_stream.remove()
+            self.liquid_fuel_stream = None
+
+
+
+class LaunchToApoapsis(StagedStep):
+    def __init__(self, height, inclination=0):
         # TODO check that target height > body upper atmosphere limit
-        # TODO allow different angled orbits - force roll
         # TODO generalise for other planets
         # TODO check for control loss (large deviation of angle from target)
         # TODO time acceleration
         # TODO autopilot that can actually fly straight
         # TODO check for not making our target apoapsis
         # TODO adjust throttle to burn to apoapsis in gravity turn
+        # TODO make gravity turn get the pitch from gravity but the heading from
+        # the desired inclination, or maybe set the initial heading in the orbital
+        # frame somehow
         self.height = height
+        self.inclination = inclination
 
     def __str__(self):
-        return "Launch to {}".format(self.height)
+        return "Launch to {} with inclination {}".format(self.height, self.inclination)
 
     def execute(self, v):
         logger.info("Begun launch step")
-        self.v = v
+        super().execute(v)
         # Set up needed telemetry
         c = core.conn
         self.throttle = 1
         self.q_limit = 1
-        self.solid_fuel_stream = None
-        self.liquid_fuel_stream = None
         self.gravity_turn_stage = 0
         self.last_altitude = 0
         self.descending_count = 0
@@ -138,7 +178,7 @@ class LaunchToApoapsis(Step):
             logger.info("Pitch over to start gravity turn")
             # Do pitchover in planet reference frame
             ap = self.v.auto_pilot
-            ap.target_pitch_and_heading(90 - PITCHOVER_TARGET, 90)
+            ap.target_pitch_and_heading(90 - PITCHOVER_TARGET, 90 + self.inclination)
             self.gravity_turn_stage = 1
             time.sleep(0.1)
         # wait for velocity vector to match our steering
@@ -168,37 +208,6 @@ class LaunchToApoapsis(Step):
             percentage = (a - START_BLEND_ALT) / (END_BLEND_ALT - START_BLEND_ALT)
             dir_vec = tuple((final_vec[i] - initial_vec[i]) * percentage + initial_vec[i] for i in range(3))
             self.v.auto_pilot.target_direction = dir_vec
-
-    def do_staging(self):
-        # Update streams
-        # We want to find the resources we'll drop if we stage
-        stage = self.v.control.current_stage - 1
-        if self.solid_fuel_stream is None:
-            res = self.v.resources_in_decouple_stage(stage, False)
-            self.solid_fuel_stream = core.conn.add_stream(res.amount, "SolidFuel")
-        if self.liquid_fuel_stream is None:
-            res = self.v.resources_in_decouple_stage(stage, False)
-            self.liquid_fuel_stream = core.conn.add_stream(res.amount, "LiquidFuel")
-        # If the current stage has no liquid fuel AND no solid fuel, stage
-        if self.solid_fuel_stream() < 0.1 and self.liquid_fuel_stream() < 0.1:
-            logger.info("Stage empty, staging")
-            self.v.control.throttle = 0
-            self.close_streams()
-            time.sleep(0.5)
-            self.v.control.activate_next_stage()
-            time.sleep(0.5)
-            # Check if we have any fuel left
-            r = self.v.resources
-            if r.amount("SolidFuel") < 0.1 and r.amount("LiquidFuel") < 0.1:
-                raise StepFailed("Out of fuel")
-
-    def close_streams(self):
-        if self.solid_fuel_stream:
-            self.solid_fuel_stream.remove()
-            self.solid_fuel_stream = None
-        if self.liquid_fuel_stream:
-            self.liquid_fuel_stream.remove()
-            self.liquid_fuel_stream = None
 
     def do_q_check(self, q_stream):
         Q_TARGET = 20000
@@ -305,16 +314,16 @@ class ChangeApsis(OrbitalAdjustment):
         super().execute(v)
 
 
-class ExecuteNode(Step):
-    # TODO generalise the auto-stager from launch to work here too
-    # TODO make the back-off at completion a bit more aggressive to avoid
-    # wandering off, and detect failure
+class ExecuteNode(StagedStep):
+    # TODO detect large deviation from burn vector and cut throttle until it's back
+    # TODO take staging into account with burn time calculations
 
     def __str__(self):
         return "Execute next node"
 
     def execute(self, v):
         logger.info("Orientating for node execution")
+        super().execute(v)
         if not v.control.nodes:
             raise StepFailed("no node to execute")
         node = v.control.nodes[0]
@@ -329,7 +338,7 @@ class ExecuteNode(Step):
                 time.sleep(1)
         ap.wait()
 
-        logger.info("Warping to circularisation burn")
+        logger.info("Warping to node burn")
         # get burn time
         F = v.available_thrust
         isp = v.specific_impulse * 9.81
@@ -350,16 +359,27 @@ class ExecuteNode(Step):
                 time.sleep(0.1)
 
         logger.info("Executing burn")
-        with core.conn.stream(getattr, node, "remaining_delta_v") as remaining_burn, \
-                core.conn.stream(node.remaining_burn_vector, node.reference_frame) as vector:
-            v.control.throttle = 1
-            while remaining_burn() > 0.5:
-                ap.target_direction = vector()
-                if remaining_burn() < 5:
-                    v.control.throttle = min(1, 0.1 + (remaining_burn() / (dv * 0.01)))
-            v.control.throttle = 0
-            ap.disengage()
-        node.remove()
+        try:
+            with core.conn.stream(getattr, node, "remaining_delta_v") as remaining_burn, \
+                    core.conn.stream(node.remaining_burn_vector, node.reference_frame) as vector:
+                v.control.throttle = 1
+                while remaining_burn() > 0.5:
+                    self.do_staging()
+                    ap.target_direction = vector()
+                    t_rem = (burn_time * remaining_burn() / dv)
+                    if remaining_burn() < 1:
+                        v.control.throttle = 0.05
+                    # less than ten seconds of burn time remaining, start throttling back
+                    # and increase precision
+                    elif t_rem < 5:
+                        v.control.throttle = (t_rem / 6) + 0.1
+                    else:
+                        time.sleep(0.1)
+                v.control.throttle = 0
+                ap.disengage()
+            node.remove()
+        finally:
+            self.close_streams()
         logger.info("Done")
 
 
