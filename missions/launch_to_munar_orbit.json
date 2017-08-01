@@ -6,5 +6,8 @@
     ["OpenPanels", [], "DropStages"],
     ["DeployAntennae", [], "DropStages"],
     ["Circularise", ["apoapsis"], "DropStages"],
-    ["ExecuteNode", [], "DropStages"]
+    ["ExecuteNode", [], "DropStages"],
+    ["TransferTo", ["Mun"]],
+    ["ControllerConfirm"],
+    ["ExecuteNode"]
 ]

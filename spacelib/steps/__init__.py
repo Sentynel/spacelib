@@ -253,7 +253,7 @@ class OrbitalAdjustment(Step):
         elif self.when == "periapsis":
             r = v.orbit.periapsis
             t = v.orbit.time_to_periapsis
-        elif isinstance(self.when, int):
+        elif isinstance(self.when, (float, int)):
             t = self.when
             anomaly = v.orbit.true_anomaly_at_ut(core.conn.space_center.ut + t)
             r = v.orbit.radius_at_true_anomaly(anomaly)
@@ -268,7 +268,6 @@ class OrbitalAdjustment(Step):
                 prograde=dv)
 
 
-        
 class Circularise(OrbitalAdjustment):
     def __init__(self, when):
         super().__init__(when, 0)
@@ -312,6 +311,80 @@ class ChangeApsis(OrbitalAdjustment):
         else:
             raise StepFailed("unknown target time")
         super().execute(v)
+
+
+class TransferTo(OrbitalAdjustment):
+    # TODO handle eccentricity
+    # TODO tune target orbit
+    # TODO patched conic solver for tweaking orbit on far end
+    # TODO handle retrograde orbits
+    # TODO check if it's going to take impractically many orbits to rendezvou
+    def __init__(self, target):
+        self.target = target
+
+    def __str__(self):
+        return "Transfer to rendezvous with {}".format(self.target)
+
+    def execute(self, v):
+        logger.info("Adding transfer node")
+        # find target object
+        try:
+            target = core.conn.space_center.bodies[self.target]
+        except KeyError as e:
+            raise StepFailed("Could not find target body {}".format(self.target)) from e
+        core.conn.space_center.target_body = target
+        # confirm it orbits the same thing we do
+        if target.orbit.body != v.orbit.body:
+            raise StepFailed("Transfer target must orbit same body")
+        # get SMA of transfer orbit
+        transfer_sma = (target.orbit.semi_major_axis + v.orbit.semi_major_axis) / 2
+        # get time for half of that orbit (note missing factor of two)
+        transfer_time = math.pi * math.sqrt(transfer_sma**3 /
+                (core.conn.space_center.g * v.orbit.body.mass))
+        logger.debug("Transfer time: %s", transfer_time)
+        # get angular velocities
+        target_angular = (2 * math.pi) / target.orbit.period
+        current_angular = (2 * math.pi) / v.orbit.period
+        relative_angular = current_angular - target_angular
+        logger.debug("Omega: Target %s us %s relative %s", target_angular,
+                current_angular, relative_angular)
+        # get target separation
+        # we want to be this far behind the target when we burn
+        target_separation = math.pi - target_angular * transfer_time
+        logger.debug("Target separation: %s", target_separation)
+        target_separation %= 2 * math.pi
+        logger.debug("Target separation: %s", target_separation)
+        # get current separation
+        separation_0 = self.get_separation(v, target)
+        # this doesn't immediately tell us the "handedness" of the separation, so...
+        # this can get confused if the separation is bang on 0 or pi, but it also
+        # doesn't actually matter in that case
+        time.sleep(1)
+        separation_1 = self.get_separation(v, target)
+        logger.debug("separation 0 %s 1 %s", separation_0, separation_1)
+        if separation_1 > separation_0:
+            # they're getting further apart
+            separation_1 = 2 * math.pi - separation_1
+            logger.debug("separation increasing, real separation: %s", separation_1)
+        # we now have the separation in decreasing form
+        # find time at which angular separation of us and target is that plus 180
+        separation_change = separation_1 - target_separation
+        logger.debug("needed change: %s", separation_change)
+        if separation_change < 0:
+            separation_change += 2 * math.pi
+        time_to_node = separation_change / relative_angular
+        logger.debug("time: %s", time_to_node)
+        # create that node
+        self.when = time_to_node
+        self.semi_major = transfer_sma
+        super().execute(v)
+
+    def get_separation(self, v, target):
+        # get current positions and find separation
+        frame = v.orbit.body.non_rotating_reference_frame
+        current_pos = v.position(frame)
+        target_pos = target.position(frame)
+        return vector_angle(current_pos, target_pos, degrees=False)
 
 
 class ExecuteNode(StagedStep):
