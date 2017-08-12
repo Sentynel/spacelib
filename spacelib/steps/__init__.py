@@ -319,6 +319,7 @@ class TransferTo(OrbitalAdjustment):
     # TODO patched conic solver for tweaking orbit on far end
     # TODO handle retrograde orbits
     # TODO check if it's going to take impractically many orbits to rendezvou
+    # TODO why am I using the positions and not just reading the true anomalies??
     def __init__(self, target):
         self.target = target
 
@@ -390,6 +391,7 @@ class TransferTo(OrbitalAdjustment):
 class ExecuteNode(StagedStep):
     # TODO detect large deviation from burn vector and cut throttle until it's back
     # TODO take staging into account with burn time calculations
+    # TODO fix pointing in the right direction before warping
 
     def __str__(self):
         return "Execute next node"

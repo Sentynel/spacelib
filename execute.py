@@ -1,17 +1,10 @@
 #! /usr/bin/env python3
 import argparse
-import logging
 
-from spacelib.core import setup
+from spacelib.core import setup, init_logging
 from spacelib import missions
 
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler()
-handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter("%(asctime)s|%(name)s|%(levelname)s\t%(message)s")
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+init_logging()
 
 parser = argparse.ArgumentParser()
 parser.add_argument("plan", help="JSON plan file", nargs="?", default=None)
