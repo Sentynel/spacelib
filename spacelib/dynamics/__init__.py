@@ -1,6 +1,8 @@
 import logging
 import math
 
+import numpy as np
+
 from .. import core
 from ..util import cross_product, dot_product, vector_magnitude, vector_angle
 
@@ -26,7 +28,7 @@ class DynamicsError(Exception):
 # R_a, R_p = (radius at) apoapsis, periapsis
 # nu = true anomaly
 class Orbit:
-    def __init__(self, body, a, e, i, w, nu, n, ref_t=None):
+    def __init__(self, body, a, e, i, w, nu, n, ref_t=None,  M_orig=None):
         self.body = body
         self.a = a
         self.e = e
@@ -38,7 +40,10 @@ class Orbit:
             self.ref_t = ref_t
         else:
             self.ref_t = core.conn.space_center.ut
-        self.M_orig = None
+        if M_orig is not None:
+            self.M_orig = M_orig
+        else:
+            self.M_orig = self.get_M_orig()
 
     @classmethod
     def from_ksp_orbit(cls, o):
@@ -49,80 +54,54 @@ class Orbit:
                 o.inclination,
                 o.argument_of_periapsis,
                 o.true_anomaly,
-                o.longitude_of_ascending_node)
+                o.longitude_of_ascending_node,
+                M_orig=o.mean_anomaly)
 
     @classmethod
     def from_pos_vel(cls, body, pos, vel, frame=None):
-        # need pos and vel in the reference frame used to map the orbital
-        # inclination and so forth. going to assume that's
-        # CelestialBody.non_rotating_reference_frame. if frame=None we assume
-        # vectors are already in that frame.
+        # ref: https://downloads.rene-schwarz.com/download/M002-Cartesian_State_Vectors_to_Keplerian_Orbit_Elements.pdf
+        # note: KSP coords: y is north, not z: y and z are switched
+        # and coordinates are left-handed, hence use of -np.cross everywhere
         sc = core.conn.space_center
         if frame is not None:
             pos = sc.transform_position(pos, frame, body.non_rotating_reference_frame)
             vel = sc.transform_velocity(pos, vel, frame, body.non_rotating_reference_frame)
-        # first of all we need the magnitudes of the pos and vel, and the angle between them
-        # (zenith = y/gamma) (note: the flight path angle phi is the complement of zenith)
-        r = vector_magnitude(pos)
-        v = vector_magnitude(vel)
-        y = vector_angle(pos, vel, degrees=False)
+        pos = np.array(pos)
+        vel = np.array(vel)
 
-        u = sc.g * body.mass
-        rvsqu = (r * v**2) / u
-        a = 1 / ((2 / r) - (v**2 / u))
-        e = math.sqrt(((rvsqu - 1)**2 * math.sin(y)**2) + math.cos(y)**2)
-        nu = math.atan2(
-                rvsqu * math.sin(y) * math.cos(y),
-                rvsqu * math.sin(y)**2 - 1
-                )
+        mu = sc.g * body.mass
+        h = -np.cross(pos, vel)
+        pos_mag = np.linalg.norm(pos)
+        # note this is the eccentricity vector!
+        e = -np.cross(vel, h) / mu - pos / pos_mag
+        e_mag = np.linalg.norm(e)
 
-        # now we need the heading, latitude and longitude
-        # note: Flight gives us these for a moving vessel, so we can use those values
-        # to test (beware of difference between celestial and local longitude though)
-        # lat/long are easy, just turn the vector into spherical polar coords
-        # lat/long = elevation theta/azimuth phi, delta/lambda_2
-        # reference frame: y goes through the north pole, x and z through the equator
-        lat = math.asin(pos[1] / r)
-        #logger.debug("lat: %s", math.degrees(lat))
-        lon = math.atan2(pos[2], pos[0])
-        #logger.debug("long: %s", math.degrees(lon))
-        # heading we get from the position and velocity vectors
-        # notated as beta
-        # n is a vector in the north pole direction
-        n = (0, 1, 0)
-        pxv = cross_product(pos, vel)
-        pxn = cross_product(pos, n)
-        west = pxv[1] > 0
-        head = math.acos(
-                dot_product(pxv, pxn) / 
-                (vector_magnitude(pxv) * vector_magnitude(pxn))
-                )
-        if west:
-            head = math.pi * 2 - head
-        #logger.debug("heading: %s", math.degrees(head))
+        n = -np.cross((0, 1, 0), h)
+        nu = math.acos(np.dot(e, pos) / (e_mag * pos_mag))
+        if np.dot(pos, vel) < 0:
+            nu = -nu
 
-        # from these we get the other orbital parameters
-        i = math.acos(math.cos(lat) * math.sin(head))
-        # l is the angular distance from ascending node to test point in orbit plane
-        l = math.atan2(math.tan(lat), math.cos(head))
-        w = l - nu # this assumes nu is -pi < nu < pi
-        if w < 0:
-            w += math.pi * 2
-        dlon = math.atan2(math.tan(head), 1/math.sin(lat))
-        n = lon - dlon
-        flip_quad = math.pi/2 < head < 3*math.pi/2
-        if (lat > 0 and flip_quad) or (lat <= 0 and not flip_quad):
-            # correct quadrant for longitude measurement
-            n += math.pi
-        n %= math.pi * 2
-        return cls(
-                body,
+        i = math.acos(h[1] / np.linalg.norm(h))
+        E = 2 * math.atan2(math.tan(nu / 2), math.sqrt((1 + e_mag) / (1 - e_mag)))
+        n_mag = np.linalg.norm(n)
+        # capital omega
+        asc = math.acos(n[0] / n_mag)
+        if n[2] < 0:
+            asc = 2 * math.pi - asc
+        w = math.acos(np.dot(n, e) / (n_mag * e_mag))
+        if e[1] < 0:
+            w = 2 * math.pi - w
+        M = E - e_mag * math.sin(E)
+        vel_mag = np.linalg.norm(vel)
+        a = 1 / ((2 / pos_mag) - (vel_mag**2 / mu))
+        return cls(body,
                 a,
-                e,
+                e_mag,
                 i,
                 w,
                 nu,
-                n)
+                asc,
+                M_orig=M)
 
     @property
     def period(self):
@@ -137,13 +116,10 @@ class Orbit:
         self.M_orig = E_orig - self.e * sin_E_orig
         return self.M_orig
 
-    def nu_at_t(self, t):
-        """Get true anomaly at specified time"""
+    def anomalies_at_t(self, t):
+        """Get eccentric and true anomaly at specified time"""
         # TODO handle hyperbolic orbits
         n = math.sqrt(core.conn.space_center.g * self.body.mass / self.a**3)
-
-        if self.M_orig is None:
-            self.get_M_orig()
 
         # mean anomaly at target
         M = (self.M_orig + n * (t - self.ref_t)) % (2 * math.pi)
@@ -152,9 +128,43 @@ class Orbit:
         E = M
         for i in range(10):
             E = E - (E - self.e * math.sin(E) - M) / (1 - self.e * math.cos(E))
+        if E > math.pi:
+            # correct to -pi to pi range
+            E -= 2 * math.pi
         # then true anomaly is
         nu = math.atan2(math.sqrt(1 - self.e**2) * math.sin(E), math.cos(E) - self.e)
-        return nu
+        return E, nu
+
+    def vectors_at_t(self, t):
+        """Get position and velocity vectors at a specified time."""
+        # ref: https://downloads.rene-schwarz.com/download/M001-Keplerian_Orbit_Elements_to_Cartesian_State_Vectors.pdf
+        sc = core.conn.space_center
+        E, nu = self.anomalies_at_t(t)
+        r_c = self.a * (1 - self.e * math.cos(E))
+        # vectors in orbit frame (this isn't a frame kRPC natively knows about)
+        o_pos = r_c * np.array((math.cos(nu), 0, math.sin(nu)))
+        o_vel = (math.sqrt(sc.g * self.body.mass * self.a) / r_c) * np.array((
+            -math.sin(E),
+            0,
+            math.sqrt(1 - self.e**2) * math.cos(E)))
+        # transform to body.non_rotating_reference_frame with a manual rotation matrix
+        cw = math.cos(self.w)
+        cn = math.cos(self.n)
+        ci = math.cos(self.i)
+        sw = math.sin(self.w)
+        sn = math.sin(self.n)
+        si = math.sin(self.i)
+        pos = (
+                o_pos[0] * (cw*cn - sw*ci*sn) - o_pos[2] * (sw*cn + cw*ci*sn),
+                o_pos[0] * (sw * si) + o_pos[2] * (cw * si),
+                o_pos[0] * (cw*sn + sw*ci*cn) + o_pos[2] * (cw*ci*cn - sw*sn),
+                )
+        vel = (
+                o_vel[0] * (cw*cn - sw*ci*sn) - o_vel[2] * (sw*cn + cw*ci*sn),
+                o_vel[0] * (sw * si) + o_vel[2] * (cw * si),
+                o_vel[0] * (cw*sn + sw*ci*cn) + o_vel[2] * (cw*ci*cn - sw*sn),
+                )
+        return pos, vel
 
 
 # Patched conic solver: find SOI changes and generate new Orbit
