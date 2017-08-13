@@ -6,6 +6,9 @@ from ..util import cross_product, dot_product, vector_magnitude, vector_angle
 
 logger = logging.getLogger(__name__)
 
+class DynamicsError(Exception):
+    pass
+
 # Orbit class
 # construct from a game orbit
 # construct from a position + velocity vector (in x reference frame)
@@ -35,6 +38,7 @@ class Orbit:
             self.ref_t = ref_t
         else:
             self.ref_t = core.conn.space_center.ut
+        self.M_orig = None
 
     @classmethod
     def from_ksp_orbit(cls, o):
@@ -119,6 +123,38 @@ class Orbit:
                 w,
                 nu,
                 n)
+
+    @property
+    def period(self):
+        return math.sqrt(4 * math.pi**2 * self.a**3 / (core.conn.space_center.g * self.body.mass))
+
+    def get_M_orig(self):
+        """Get mean anomaly at reference time"""
+        # via the eccentric anomaly
+        top = math.sqrt(1 - self.e**2) * math.sin(self.nu)
+        sin_E_orig = top / (1 + self.e * math.cos(self.nu))
+        E_orig = math.atan2(top, self.e + math.cos(self.nu))
+        self.M_orig = E_orig - self.e * sin_E_orig
+        return self.M_orig
+
+    def nu_at_t(self, t):
+        """Get true anomaly at specified time"""
+        # TODO handle hyperbolic orbits
+        n = math.sqrt(core.conn.space_center.g * self.body.mass / self.a**3)
+
+        if self.M_orig is None:
+            self.get_M_orig()
+
+        # mean anomaly at target
+        M = (self.M_orig + n * (t - self.ref_t)) % (2 * math.pi)
+        # now get the eccentric anomaly numerically, starting with mean anomaly
+        # as the guess
+        E = M
+        for i in range(10):
+            E = E - (E - self.e * math.sin(E) - M) / (1 - self.e * math.cos(E))
+        # then true anomaly is
+        nu = math.atan2(math.sqrt(1 - self.e**2) * math.sin(E), math.cos(E) - self.e)
+        return nu
 
 
 # Patched conic solver: find SOI changes and generate new Orbit

@@ -1,4 +1,5 @@
 import logging
+import math
 import unittest
 
 from spacelib import core, dynamics
@@ -40,3 +41,10 @@ class TestOrbits(unittest.TestCase):
         self.assertAlmostEqual(ref_orbit.i, constructed_orbit.i, delta=d(ref_orbit.i))
         self.assertAlmostEqual(ref_orbit.w, constructed_orbit.w, delta=d(ref_orbit.w))
         self.assertAlmostEqual(ref_orbit.n, constructed_orbit.n, delta=d(ref_orbit.n))
+
+    def test_nu_at_t(self):
+        period = self.v.orbit.period
+        o = dynamics.Orbit.from_ksp_orbit(self.v.orbit)
+        for i in range(0, 100, 17):
+            t = self.conn.space_center.ut + period * (i/100)
+            self.assertAlmostEqual(o.nu_at_t(t), self.v.orbit.true_anomaly_at_ut(t), delta=0.02 * math.pi)
